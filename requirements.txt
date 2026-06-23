@@ -1,0 +1,6 @@
+pyrogram>=2.0.106
+tgcrypto
+motor
+pymongo
+python-dotenv
+aiohttp>=3.9.0

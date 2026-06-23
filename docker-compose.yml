@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  securebot:
+    build: .
+    container_name: securebot
+    restart: unless-stopped
+    ports:
+      - "${WEBUI_PORT:-8080}:8080"
+    env_file:
+      - .env
+    volumes:
+      # Persists the Pyrogram session file so you don't re-auth on restart
+      - ./session:/app/session
+    environment:
+      - WEBUI_HOST=0.0.0.0
+      - WEBUI_PORT=8080
