@@ -257,7 +257,13 @@ def _icon(name, size=20, cls="", bg=None):
         return f'<div class="icon-bg" style="background-color:{bg}">{svg}</div>'
     return svg
 
-def _file_icon(ft, size=20):
+def _file_icon(ft, size=20, file_name=""):
+    # Resolve the effective type: documents with video/audio/image extensions
+    # should show the matching icon, consistent with the webui file manager.
+    if ft == "document" and file_name:
+        resolved = _get_share_preview_kind(ft, file_name)
+        if resolved in ("video", "audio", "photo"):
+            ft = resolved
     m = {"photo": "#a78bfa", "video": "#f87171", "audio": "#e55835", "document": "#607d8b"}
     i = {"photo": "image", "video": "video", "audio": "audio"}
     return _icon(i.get(ft, "file"), size, "", m.get(ft, "#607d8b"))
@@ -3052,7 +3058,7 @@ async def handle_share_view(request):
         else:
             body = (
                 '<div class="share-spub-page"><div class="spub-card">'
-                f'<div class="spub-icon">{_file_icon(ft, 28)}</div>'
+                f'<div class="spub-icon">{_file_icon(ft, 28, name)}</div>'
                 f'<div class="spub-name">{name}</div>'
                 f'<div class="spub-meta">{size}</div>'
                 f'<a class="btn btn-primary btn-wide" style="height:46px" href="/s/{token}/download">'
@@ -3120,7 +3126,7 @@ async def _render_share_folder(request, doc, folder):
             view_href = f'/s/{doc["token"]}/view?fid={fid_str}{sub_qs}'
             rows += (
                 f'<div class="sri" style="cursor:pointer;position:relative" onclick="location.href=\'{view_href}\'">'
-                f'<div class="sri-icon">{_file_icon(ft,28)}</div>'
+                f'<div class="sri-icon">{_file_icon(ft,28,fn)}</div>'
                 f'<div class="sri-info"><div class="sri-name">{fn}</div>'
                 f'<div class="sri-meta"><span class="sri-size">{sz}</span></div></div>'
                 f'<a href="{dl_href}" class="sri-dl-btn" onclick="event.stopPropagation()" title="Download">'
@@ -3130,7 +3136,7 @@ async def _render_share_folder(request, doc, folder):
         else:
             rows += (
                 f'<a class="sri" href="{dl_href}" style="text-decoration:none">'
-                f'<div class="sri-icon">{_file_icon(ft,28)}</div>'
+                f'<div class="sri-icon">{_file_icon(ft,28,fn)}</div>'
                 f'<div class="sri-info"><div class="sri-name">{fn}</div>'
                 f'<div class="sri-meta"><span class="sri-size">{sz}</span></div></div>'
                 f'<span class="btn-icon sri-dl-btn" style="pointer-events:none">{_icon("download",18)}</span></a>'

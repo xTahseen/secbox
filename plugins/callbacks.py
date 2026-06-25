@@ -288,7 +288,7 @@ async def folder_link(_, cq):
     if not folder:
         return await cq.answer("Folder not found", show_alert=True)
     await cq.answer()
-    link = f"{WEBUI_BASE}/{folder_id}"
+    link = f"{WEBUI_BASE}{folder_id}"
     await cq.message.reply_text(
         f"🔗 Link for folder **{folder['name']}**:\n`{link}`",
         reply_markup=InlineKeyboardMarkup([
