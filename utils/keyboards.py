@@ -163,7 +163,7 @@ async def folder_keyboard(user_id: int, folder_id: str, folder_name: str, page: 
 async def folder_options_keyboard(folder_id: str):
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("➕ New Subfolder", callback_data=f"new_folder:{folder_id}"),
+            InlineKeyboardButton("➕ New Folder", callback_data=f"new_folder:{folder_id}"),
             InlineKeyboardButton("✏️ Rename", callback_data=f"rename:{folder_id}"),
         ],
         [
