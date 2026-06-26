@@ -566,7 +566,7 @@ async def handle_login(request):
         f'<input name="password" type="password" placeholder="Enter your password" autocomplete="current-password"></div>'\
         f'<button type="submit" class="btn btn-primary btn-wide" style="height:46px;margin-top:8px;font-size:16px">'\
         f'{_icon("login_arrow",18)} Sign In</button></form>'\
-        f'<p class="lhint">Enter your username &amp; password. Set them via <code>/webui</code> in the bot.</p>'\
+        f'<p class="lhint">Set credentials via Telegram @SecureBoxbot using the "/webui" command.</p>'\
         f'</div></div>',
         "Sign In"
     )
