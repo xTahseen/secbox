@@ -3016,7 +3016,12 @@ document.addEventListener('DOMContentLoaded',function(){{
     return web.Response(content_type="text/html", text=html)
 
 
-def _share_page(body, title="Shared", description=None, og_url=""):
+_SHARE_JS_BASE = """
+function toast(msg,type){var t=document.getElementById('toast');if(!t)return;t.textContent=msg;t.className='show '+(type||'');clearTimeout(t._t);t._t=setTimeout(function(){t.className=''},3500);}
+function bar(on){var b=document.getElementById('bar');if(!b)return;b.className=on?'on':'done';if(!on)setTimeout(function(){b.className=''},800);}
+"""
+
+def _share_page(body, title="Shared", description=None, og_url="", extra_js=""):
     desc = description or f"{title} was shared with you via SecureBox."
     og = _og_meta_tags(title, desc, url_path=og_url)
     return web.Response(content_type="text/html", text=(
@@ -3030,7 +3035,8 @@ def _share_page(body, title="Shared", description=None, og_url=""):
         "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
         "<link href='https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@400;500;700&display=swap' rel='stylesheet'>"
         f"<style>{_CSS}</style>"
-        f"</head><body>{body}</body></html>"
+        f"</head><body><div id='bar'></div><div id='toast'></div>{body}"
+        f"<script>{_SHARE_JS_BASE}{extra_js}</script></body></html>"
     ))
 
 async def _load_share_or_404(request):
@@ -3136,14 +3142,13 @@ async def handle_share_unlock(request):
                      max_age=86400, httponly=True, samesite="Lax")
     raise resp
 
-async def _render_share_folder(request, doc, folder):
+async def _share_resolve_current(request, doc, root_folder):
+    """Resolve the folder the request is currently pointed at (root or a
+    ?sub= descendant), validating that it really lives under the share."""
     folders_col = request.app["folders_col"]
-    files_col   = request.app["files_col"]
     uid         = doc["user_id"]
-    sub_param   = request.rel_url.query.get("sub", "")  # optional nested subfolder id, must be a descendant
-
-    current_id = folder["_id"]
-    current_name = folder.get("name", "Shared folder")
+    sub_param   = request.rel_url.query.get("sub", "")
+    current_id, current_name = root_folder["_id"], root_folder.get("name", "Shared folder")
     if sub_param:
         try:
             sub_oid = ObjectId(sub_param)
@@ -3155,69 +3160,219 @@ async def _render_share_folder(request, doc, folder):
         if not sub_doc:
             raise web.HTTPNotFound()
         current_id, current_name = sub_oid, sub_doc.get("name", "Folder")
+    return sub_param, current_id, current_name
 
+
+async def _share_crumbs(folders_col, uid, root_id, root_name, current_id):
+    """Breadcrumb trail from the shared root down to the current folder."""
+    crumbs = []
+    cur = str(current_id)
+    root_str = str(root_id)
+    seen = set()
+    while cur and cur != root_str and cur not in seen:
+        seen.add(cur)
+        d = await folders_col.find_one({"_id": ObjectId(cur), "user_id": uid})
+        if not d:
+            break
+        crumbs.append({"id": cur, "name": d.get("name", "Folder")})
+        cur = d.get("parent_id")
+    crumbs.append({"id": root_str, "name": root_name})
+    crumbs.reverse()
+    return crumbs
+
+
+async def _share_list_items(request, doc, current_id):
+    folders_col = request.app["folders_col"]
+    files_col   = request.app["files_col"]
+    uid         = doc["user_id"]
     sub_folders = await folders_col.find({"user_id": uid, "parent_id": str(current_id)}).sort("name", 1).to_list(500)
     sub_files   = await files_col.find({"user_id": uid, "folder_id": str(current_id)}).sort("file_name", 1).to_list(500)
-
-    rows = ""
+    items = []
     for f in sub_folders:
-        fn = f.get("name", "")
-        rows += (
-            f'<a class="sri" href="/s/{doc["token"]}?sub={f["_id"]}" style="text-decoration:none">'
-            f'<div class="sri-icon">{_icon("folder",28,"","#0483c3")}</div>'
-            f'<div class="sri-info"><div class="sri-name">{fn}</div>'
-            '<div class="sri-meta"><span class="sri-size">Folder</span></div></div></a>'
-        )
+        items.append({"type": "folder", "id": str(f["_id"]), "name": f.get("name", "")})
     for f in sub_files:
         fn = f.get("file_name", "file")
         ft = f.get("file_type", "document")
-        sz = _fmt_size(f.get("file_size"))
-        fid_str = str(f["_id"])
-        preview_kind = _get_share_preview_kind(ft, fn)
-        dl_href = f'/s/{doc["token"]}/download?fid={fid_str}'
-        if preview_kind:
-            sub_qs = f'&sub={sub_param}' if sub_param else ''
-            view_href = f'/s/{doc["token"]}/view?fid={fid_str}{sub_qs}'
+        items.append({
+            "type": "file",
+            "id": str(f["_id"]),
+            "name": fn,
+            "file_type": ft,
+            "size": f.get("file_size"),
+            "preview": bool(_get_share_preview_kind(ft, fn)),
+        })
+    return items
+
+
+def _share_esc(s):
+    return (s or "").replace("&", "&amp;").replace('"', "&quot;").replace("'", "&#39;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _share_rows_html(token, sub_param, items):
+    rows = ""
+    for it in items:
+        if it["type"] == "folder":
+            fn = _share_esc(it["name"])
             rows += (
-                f'<div class="sri" style="cursor:pointer;position:relative" onclick="location.href=\'{view_href}\'">'
-                f'<div class="sri-icon">{_file_icon(ft,28,fn)}</div>'
+                f'<a class="sri" href="/s/{token}?sub={it["id"]}" data-nav-folder="{it["id"]}" data-nav-name="{fn}" style="text-decoration:none">'
+                f'<div class="sri-icon">{_icon("folder",28,"","#0483c3")}</div>'
                 f'<div class="sri-info"><div class="sri-name">{fn}</div>'
-                f'<div class="sri-meta"><span class="sri-size">{sz}</span></div></div>'
-                f'<a href="{dl_href}" class="sri-dl-btn" onclick="event.stopPropagation()" title="Download">'
-                f'{_icon("download",18)}</a>'
-                f'</div>'
+                '<div class="sri-meta"><span class="sri-size">Folder</span></div></div></a>'
             )
         else:
-            rows += (
-                f'<a class="sri" href="{dl_href}" style="text-decoration:none">'
-                f'<div class="sri-icon">{_file_icon(ft,28,fn)}</div>'
-                f'<div class="sri-info"><div class="sri-name">{fn}</div>'
-                f'<div class="sri-meta"><span class="sri-size">{sz}</span></div></div>'
-                f'<span class="btn-icon sri-dl-btn" style="pointer-events:none">{_icon("download",18)}</span></a>'
-            )
+            fn, ft = _share_esc(it["name"]), it["file_type"]
+            sz = _fmt_size(it.get("size"))
+            dl_href = f'/s/{token}/download?fid={it["id"]}'
+            if it.get("preview"):
+                sub_qs = f'&sub={sub_param}' if sub_param else ''
+                view_href = f'/s/{token}/view?fid={it["id"]}{sub_qs}'
+                rows += (
+                    f'<div class="sri" style="cursor:pointer;position:relative" onclick="bar(true);location.href=\'{view_href}\'">'
+                    f'<div class="sri-icon">{_file_icon(ft,28,fn)}</div>'
+                    f'<div class="sri-info"><div class="sri-name">{fn}</div>'
+                    f'<div class="sri-meta"><span class="sri-size">{sz}</span></div></div>'
+                    f'<a href="{dl_href}" class="sri-dl-btn" onclick="event.stopPropagation()" title="Download">'
+                    f'{_icon("download",18)}</a>'
+                    f'</div>'
+                )
+            else:
+                rows += (
+                    f'<a class="sri" href="{dl_href}" style="text-decoration:none">'
+                    f'<div class="sri-icon">{_file_icon(ft,28,fn)}</div>'
+                    f'<div class="sri-info"><div class="sri-name">{fn}</div>'
+                    f'<div class="sri-meta"><span class="sri-size">{sz}</span></div></div>'
+                    f'<span class="btn-icon sri-dl-btn" style="pointer-events:none">{_icon("download",18)}</span></a>'
+                )
     if not rows:
         rows = '<div class="empty"><div class="empty-icon">' + _icon("folder", 40) + '</div><h3>Empty folder</h3></div>'
+    return rows
 
-    back_link = ""
-    if sub_param:
-        back_link = f'<a class="bc-crumb" href="/s/{doc["token"]}">{_icon("back",14)} Back to {folder.get("name","Shared folder")}</a>'
+
+def _share_crumbs_html(token, crumbs):
+    if len(crumbs) <= 1:
+        return ""
+    parts = []
+    for i, c in enumerate(crumbs):
+        last = i == len(crumbs) - 1
+        cls = "bc-crumb last" if last else "bc-crumb"
+        cname = _share_esc(c["name"])
+        cid   = c["id"]
+        if last:
+            parts.append(f'<span class="{cls}">{cname}</span>')
+        else:
+            href_qs = f'?sub={cid}' if i > 0 else ''
+            nav_fid = cid if i > 0 else ''
+            parts.append(
+                f'<a class="{cls}" href="/s/{token}{href_qs}"'
+                f' data-nav-folder="{nav_fid}" data-nav-name="{cname}"'
+                f' style="text-decoration:none">{cname}</a>'
+            )
+        if not last:
+            parts.append('<span class="bc-sep">\u203a</span>')
+    return "".join(parts)
+
+
+async def handle_share_api_list(request):
+    """GET /s/{token}/api/list?sub= — JSON listing used for AJAX navigation
+    inside a shared folder (powers the loading bar + smooth in-page nav)."""
+    doc = await _load_share_or_404(request)
+    if doc["resource_type"] != "folder":
+        raise web.HTTPNotFound()
+    if not _share_password_ok(request, doc):
+        return web.json_response({"error": "password_required"}, status=403)
+
+    folders_col = request.app["folders_col"]
+    uid  = doc["user_id"]
+    root = await folders_col.find_one({"_id": ObjectId(doc["resource_id"]), "user_id": uid})
+    if not root:
+        raise web.HTTPNotFound()
+
+    sub_param, current_id, current_name = await _share_resolve_current(request, doc, root)
+    items  = await _share_list_items(request, doc, current_id)
+    crumbs = await _share_crumbs(folders_col, uid, root["_id"], root.get("name", "Shared folder"), current_id)
+    rows_html = _share_rows_html(doc["token"], sub_param, items)
+    bc_html   = _share_crumbs_html(doc["token"], crumbs)
+    return web.json_response({
+        "name": current_name, "sub": sub_param,
+        "rows_html": rows_html, "breadcrumb_html": bc_html,
+        "item_count": len(items),
+    })
+
+
+_SHARE_FOLDER_JS = r"""
+function _shNavBind(){
+  document.querySelectorAll('[data-nav-folder]').forEach(function(el){
+    el.onclick=function(e){
+      e.preventDefault();
+      var fid=el.getAttribute('data-nav-folder');
+      _shLoad(fid,true);
+    };
+  });
+}
+async function _shLoad(fid,push){
+  bar(true);
+  try{
+    var url='/s/'+SH_TOKEN+'/api/list'+(fid?('?sub='+encodeURIComponent(fid)):'');
+    var r=await fetch(url);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    var d=await r.json();
+    document.getElementById('s-rows').innerHTML=d.rows_html;
+    document.getElementById('s-bc').innerHTML=d.breadcrumb_html;
+    document.getElementById('s-bc').style.display=d.breadcrumb_html?'flex':'none';
+    document.getElementById('s-title').textContent=d.name;
+    if(push){
+      var pageUrl='/s/'+SH_TOKEN+(fid?('?sub='+fid):'');
+      history.pushState({fid:fid||''},'',pageUrl);
+    }
+    _shNavBind();
+  }catch(e){
+    document.getElementById('s-rows').innerHTML='<div class="empty"><div class="empty-icon">'+IC_FOLDER+'</div><h3>Failed to load</h3><p>'+e.message+'</p></div>';
+  }
+  bar(false);
+}
+window.addEventListener('popstate',function(e){
+  var params=new URLSearchParams(window.location.search);
+  _shLoad(params.get('sub')||'',false);
+});
+document.addEventListener('DOMContentLoaded',_shNavBind);
+"""
+
+
+async def _render_share_folder(request, doc, folder):
+    folders_col = request.app["folders_col"]
+    uid         = doc["user_id"]
+
+    sub_param, current_id, current_name = await _share_resolve_current(request, doc, folder)
+    items  = await _share_list_items(request, doc, current_id)
+    crumbs = await _share_crumbs(folders_col, uid, folder["_id"], folder.get("name", "Shared folder"), current_id)
+    rows      = _share_rows_html(doc["token"], sub_param, items)
+    bc_html   = _share_crumbs_html(doc["token"], crumbs)
+
+    def _js_str(s):
+        return s.replace("\\", "\\\\").replace("`", "\\`").replace("</script>", "<\\/script>")
 
     body = (
         '<div class="spub-browse">'
-        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">'
+        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
         f'<div class="fi-icon">{_icon("folder",28,"","#0483c3")}</div>'
-        f'<div><div style="font-size:18px;font-weight:700">{current_name}</div>'
+        f'<div><div id="s-title" style="font-size:18px;font-weight:700">{_share_esc(current_name)}</div>'
         f'<div style="font-size:12px;color:var(--text3)">Shared folder \u00b7 view only</div></div></div>'
-        f'{back_link}'
-        f'<div style="border:1px solid var(--border);border-radius:var(--r12);overflow:hidden;margin-top:10px">{rows}</div>'
+        f'<div id="s-bc" class="bc" style="display:{"flex" if bc_html else "none"};align-items:center;gap:6px;overflow-x:auto;margin-bottom:10px;font-size:13px;color:var(--text2)">{bc_html}</div>'
+        f'<div id="s-rows" style="border:1px solid var(--border);border-radius:var(--r12);overflow:hidden">{rows}</div>'
         "</div>"
     )
-    n_items = len(sub_folders) + len(sub_files)
+    extra_js = (
+        f"var SH_TOKEN=`{_js_str(doc['token'])}`;"
+        f"var IC_FOLDER=`{_js_str(_icon('folder', 40))}`;"
+        + _SHARE_FOLDER_JS
+    )
+    n_items = len(items)
     item_desc = f"{n_items} item{'s' if n_items != 1 else ''} \u00b7 Shared folder via SecureBox"
     return _share_page(
         body, current_name,
         description=item_desc,
         og_url=f"/s/{doc['token']}" + (f"?sub={sub_param}" if sub_param else ""),
+        extra_js=extra_js,
     )
 
 async def handle_share_file_view(request):
@@ -3448,6 +3603,7 @@ def create_app(files_col, folders_col, settings_col, bot_instance=None, shares_c
     app.router.add_get("/s/{token}/download",   handle_share_download)
     app.router.add_get("/s/{token}/preview",    handle_share_preview)
     app.router.add_get("/s/{token}/view",       handle_share_file_view)
+    app.router.add_get("/s/{token}/api/list",   handle_share_api_list)
 
     async def _ensure_indexes(app):
         # Indexes for every collection (files/folders/settings/shares/etc.)
