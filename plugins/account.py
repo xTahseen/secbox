@@ -103,7 +103,10 @@ async def webui_clear_execute(_, query):
     await query.answer("Account cleared.")
     await settings.update_one(
         {"user_id": uid},
-        {"$unset": {"webui_password_hash": "", "webui_username": ""}},
+        {
+            "$unset": {"webui_password_hash": "", "webui_username": ""},
+            "$inc": {"session_version": 1},
+        },
     )
     await query.message.edit_text(
         "<b>✅ WebUI account cleared.</b>\n\n"
@@ -172,11 +175,18 @@ async def webui_reply_handler(_, message):
         pw_hash = _hash(text)
         await settings.update_one(
             {"user_id": uid},
-            {"$set": {
-                "webui_username":      username,
-                "webui_password_hash": pw_hash,
-                "user_id":             uid,
-            }},
+            {
+                "$set": {
+                    "webui_username":      username,
+                    "webui_password_hash": pw_hash,
+                    "user_id":             uid,
+                },
+                # Bumping this invalidates every WebUI session cookie issued
+                # before this change (see require_auth's version check in
+                # webui.py) — so changing your password also logs out any
+                # browser that was already signed in with the old one.
+                "$inc": {"session_version": 1},
+            },
             upsert=True
         )
 

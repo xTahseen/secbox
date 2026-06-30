@@ -57,6 +57,18 @@ async def save_file(_, message):
     height    = getattr(tg, "height", None)
     mime_type = getattr(tg, "mime_type", None)
 
+    # Telegram sends a small low-res preview alongside documents/videos/audio
+    # (album art) as a list of `Thumbnail` objects under `.thumbs`, ordered
+    # smallest-first. We grab the smallest one for a fast/cheap WebUI grid
+    # thumbnail. Photos don't reliably expose a separate `.thumbs` list, so
+    # we fall back to the photo's own file_id (already a fairly small JPEG).
+    thumb_file_id = None
+    thumbs = getattr(tg, "thumbs", None)
+    if thumbs:
+        thumb_file_id = thumbs[0].file_id
+    elif ftype == "photo":
+        thumb_file_id = tg.file_id
+
     doc = {
         "user_id":          user_id,
         "folder_id":        folder_id_str,
@@ -74,6 +86,8 @@ async def save_file(_, message):
         doc["height"] = height
     if mime_type:
         doc["mime_type"] = mime_type
+    if thumb_file_id:
+        doc["thumb_file_id"] = thumb_file_id
 
     result = await files.insert_one(doc)
 

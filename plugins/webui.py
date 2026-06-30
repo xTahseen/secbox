@@ -120,8 +120,10 @@ def _verify(token):
     except Exception:
         return None
 
-def _make_token(uid):
-    return _sign({"uid": uid, "exp": time.time() + 86400 * 7})
+SESSION_TTL = 6 * 3600  # 6 hours — both the cookie's max_age and the signed exp claim
+
+def _make_token(uid, ver=0):
+    return _sign({"uid": uid, "ver": ver, "exp": time.time() + SESSION_TTL})
 
 def _hash_pw(pw):
     return hashlib.sha256(pw.encode()).hexdigest()
@@ -210,6 +212,16 @@ def require_auth(handler):
     async def wrapper(request):
         tok = request.cookies.get("session")
         p   = _verify(tok) if tok else None
+        if p:
+            # A signature+exp check alone isn't enough to catch "this account's
+            # credentials were changed/cleared since this cookie was issued" —
+            # that requires a live DB check against session_version, which
+            # account.py bumps on password change and on account clear.
+            settings_col = request.app["settings_col"]
+            doc = await settings_col.find_one({"user_id": p["uid"]})
+            current_ver = (doc or {}).get("session_version", 0)
+            if p.get("ver", 0) != current_ver:
+                p = None
         if not p:
             if request.path.startswith("/api/"):
                 raise web.HTTPUnauthorized()
@@ -267,6 +279,33 @@ def _file_icon(ft, size=20, file_name=""):
     m = {"photo": "#a78bfa", "video": "#f87171", "audio": "#e55835", "document": "#607d8b"}
     i = {"photo": "image", "video": "video", "audio": "audio"}
     return _icon(i.get(ft, "file"), size, "", m.get(ft, "#607d8b"))
+
+
+_PLAY_TRIANGLE_SVG = (
+    '<svg viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>'
+)
+
+def _share_thumb_html(token, fid, ft, file_name, has_thumb):
+    """Server-rendered equivalent of the WebUI's thumbHTML() — used for the
+    public share folder browser, which is plain HTML (no client JS file
+    list). Falls back to the generic colored icon if there's no captured
+    thumbnail, or via onerror if the thumb request fails at render time."""
+    resolved = ft
+    if ft == "document" and file_name:
+        r = _get_share_preview_kind(ft, file_name)
+        if r in ("video", "audio", "photo"):
+            resolved = r
+    if not has_thumb or resolved not in ("photo", "video", "audio"):
+        return _file_icon(ft, 28, file_name)
+    fallback_icon = _file_icon(ft, 28, file_name).replace('"', "&quot;")
+    play_overlay = f'<span class="sri-thumb-play">{_PLAY_TRIANGLE_SVG}</span>' if resolved in ("video", "audio") else ""
+    return (
+        f'<span class="sri-thumb-wrap">'
+        f'<img class="sri-thumb" loading="lazy" src="/s/{token}/thumb?fid={fid}" '
+        f'onerror="this.parentElement.outerHTML=\'{fallback_icon}\'">'
+        f'{play_overlay}'
+        f'</span>'
+    )
 
 
 _PREVIEW_VID_EXTS = {"mp4","webm","ogv","mov","mkv","avi","m4v","3gp","flv"}
@@ -355,6 +394,10 @@ nav{background:#171717;padding:0 14px;display:flex;align-items:center;gap:10px;h
 .custom-cb.checked::after{content:'';width:7px;height:4px;background:transparent;border-radius:0;border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg) translateY(-1px);position:static}
 .custom-cb:not(.checked):hover{border-color:var(--accent);background:var(--accent-dim)}
 .fi-icon{flex-shrink:0;display:flex;align-items:center;justify-content:center;width:46px;height:46px}
+.fi-thumb-wrap,.sri-thumb-wrap{position:relative;flex-shrink:0;display:block;width:46px;height:46px;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+.fi-thumb,.sri-thumb{width:46px;height:46px;border-radius:50%;object-fit:cover;display:block;background:var(--bg2,#1a1a1a)}
+.fi-thumb-play,.sri-thumb-play{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:flex;align-items:center;justify-content:center;pointer-events:none;filter:drop-shadow(0 1px 3px rgba(0,0,0,.65))}
+.fi-thumb-play svg,.sri-thumb-play svg{width:18px;height:18px}
 .icon-bg{display:flex;align-items:center;justify-content:center;width:46px;height:46px;border-radius:50%;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.3)}.icon-bg svg{width:24px;height:24px;color:white;stroke:white}
 .fi-info{flex:1;min-width:0;overflow:hidden}
 .fi-name{font-size:16px;font-weight:400;color:var(--text);white-space:normal;overflow-wrap:break-word;word-break:break-word;line-height:1.3}.fi-name.fol{font-weight:400}
@@ -533,7 +576,13 @@ def _page(body, title="SecureBox"):
 async def handle_login(request):
     try:
         tok = request.cookies.get("session")
-        if tok and _verify(tok):
+        p = _verify(tok) if tok else None
+        if p:
+            settings_col = request.app["settings_col"]
+            doc = await settings_col.find_one({"user_id": p["uid"]})
+            if (doc or {}).get("session_version", 0) != p.get("ver", 0):
+                p = None
+        if p:
             next_url = request.rel_url.query.get("next", "/drive")
             if not next_url.startswith("/"):
                 next_url = "/drive"
@@ -572,7 +621,8 @@ async def handle_login(request):
                     if not next_url.startswith("/"):
                         next_url = "/drive"
                     resp = web.HTTPFound(next_url)
-                    resp.set_cookie("session", _make_token(uid), max_age=86400*7, httponly=True, samesite="Lax")
+                    resp.set_cookie("session", _make_token(uid, doc.get("session_version", 0)),
+                                     max_age=SESSION_TTL, httponly=True, samesite="Lax")
                     raise resp
                 else:
                     error = "Incorrect password."
@@ -648,6 +698,67 @@ async def handle_avatar(request):
         raise web.HTTPNotFound()
     return web.Response(body=data, content_type="image/jpeg",
                          headers={"Cache-Control": "private, max-age=3600"})
+
+
+# ── File thumbnails (photo / video / audio) ─────────────────────────────────────
+
+_THUMB_CACHE_TTL = 86400  # seconds — thumbnails never change for a given file
+_THUMB_CACHE_MAX = 2000   # cap in-memory entries so this can't grow unbounded
+
+@require_auth
+async def api_thumb(request):
+    """Streams a small preview image for photo/video/audio files so the WebUI
+    grid can show real thumbnails instead of generic icons.
+
+    Telegram already generates a low-res JPEG thumbnail for videos, documents,
+    and audio (album art) and stores it server-side — we just need to ask for
+    it via `thumb_file_id`, which `save_file()` captures at upload time. For
+    photos we fall back to the photo's own (already small) file_id. Results
+    are cached in-memory since a thumbnail's bytes never change."""
+    uid       = request["uid"]
+    fid       = request.match_info["fid"]
+    files_col = request.app["files_col"]
+    bot       = request.app.get("bot_instance")
+    if not bot:
+        raise web.HTTPNotFound()
+
+    cache = request.app["_thumb_cache"]
+    cached = cache.get(fid)
+    if cached is not None:
+        if cached is False:
+            raise web.HTTPNotFound()
+        return web.Response(body=cached, content_type="image/jpeg",
+                             headers={"Cache-Control": "private, max-age=86400, immutable"})
+
+    try:
+        doc = await files_col.find_one({"_id": ObjectId(fid), "user_id": uid})
+    except Exception:
+        doc = None
+    if not doc:
+        raise web.HTTPNotFound()
+
+    thumb_fid = doc.get("thumb_file_id")
+    if not thumb_fid:
+        cache[fid] = False
+        raise web.HTTPNotFound()
+
+    data = None
+    try:
+        f = await bot.download_media(thumb_fid, in_memory=True)
+        if f:
+            data = bytes(f.getbuffer())
+    except Exception as e:
+        logger.error(f"Thumb fetch error for fid={fid}: {e}", exc_info=True)
+        data = None
+
+    if len(cache) >= _THUMB_CACHE_MAX:
+        cache.pop(next(iter(cache)))  # evict oldest-inserted entry
+    cache[fid] = data if data else False
+
+    if not data:
+        raise web.HTTPNotFound()
+    return web.Response(body=data, content_type="image/jpeg",
+                         headers={"Cache-Control": "private, max-age=86400, immutable"})
 
 
 # ── Drive browser ──────────────────────────────────────────────────────────────
@@ -772,6 +883,22 @@ function getIco(ft,name){
   }
   return IC.file;
 }
+var PLAY_TRI='<svg viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z"/></svg>';
+function thumbHTML(f){
+  // Photos/videos/audio with a captured Telegram thumbnail get a real
+  // preview image; everything else (and any image that fails to load)
+  // falls back to the generic type icon. Video/audio thumbs get a small
+  // play-triangle badge so they read as "playable" rather than a generic photo.
+  if(f.thumb_file_id && (f.file_type==='photo'||f.file_type==='video'||f.file_type==='audio')){
+    var ico=getIco(f.file_type,f.file_name).replace(/"/g,'&quot;');
+    var playBadge=(f.file_type==='video'||f.file_type==='audio')?'<span class="fi-thumb-play">'+PLAY_TRI+'</span>':'';
+    return '<span class="fi-thumb-wrap">'
+      +'<img class="fi-thumb" loading="lazy" src="/api/thumb/'+f._id+'"'
+      +' onerror="this.parentElement.outerHTML=\'<div class=&quot;fi-icon&quot;>'+ico+'</div>\'">'
+      +playBadge+'</span>';
+  }
+  return '<div class="fi-icon">'+getIco(f.file_type,f.file_name)+'</div>';
+}
 
 var folder='root', folderName='My Drive', stack=[], files=[], sel=new Set(),
     renameId=null, delIds=[], fabOpen=false, longPressTimer=null, _pvId=null,
@@ -875,7 +1002,7 @@ function _fiHTML(f){
     +' oncontextmenu="event.preventDefault();longPress(\''+f._id+'\')"'
     +' ontouchstart="startLong(event,\''+f._id+'\')" ontouchend="endLong()" ontouchmove="endLong()">'
     +'<div class="fi-cb" onclick="event.stopPropagation();toggleSelCustom(\''+f._id+'\',this.querySelector(\'.custom-cb\'))"><div class="custom-cb"></div></div>'
-    +'<div class="fi-icon">'+getIco(f.file_type,f.file_name)+'</div>'
+    +thumbHTML(f)
     +'<div class="fi-info"><div class="fi-name-row"><div class="fi-name">'+f.file_name+'</div>'+badge+'</div>'
     +'<div class="fi-meta"><span class="fi-size">'+fmtSize(f.file_size)+'</span>'
     +'<span class="fi-date">'+dt(f.created_at)+'</span></div></div>'
@@ -1357,7 +1484,7 @@ function _searchItemHTML(f){
     +' oncontextmenu="event.preventDefault();longPress(\''+f._id+'\')"'
     +' ontouchstart="startLong(event,\''+f._id+'\')" ontouchend="endLong()" ontouchmove="endLong()">'
     +'<div class="fi-cb" onclick="event.stopPropagation();toggleSelCustom(\''+f._id+'\')"><div class="custom-cb"></div></div>'
-    +'<div class="fi-icon">'+getIco(f.file_type,f.file_name)+'</div>'
+    +thumbHTML(f)
     +'<div class="fi-info"><div class="fi-name-row"><div class="fi-name">'+f.file_name+'</div>'+badge+'</div>'
     +'<div class="fi-meta"><span class="fi-size">'+fmtSize(f.file_size)+'</span>'
     +'<span class="fi-date">'+dt(f.created_at)+'</span></div></div>'
@@ -3200,6 +3327,7 @@ async def _share_list_items(request, doc, current_id):
             "file_type": ft,
             "size": f.get("file_size"),
             "preview": bool(_get_share_preview_kind(ft, fn)),
+            "has_thumb": bool(f.get("thumb_file_id")),
         })
     return items
 
@@ -3223,12 +3351,13 @@ def _share_rows_html(token, sub_param, items):
             fn, ft = _share_esc(it["name"]), it["file_type"]
             sz = _fmt_size(it.get("size"))
             dl_href = f'/s/{token}/download?fid={it["id"]}'
+            icon_html = _share_thumb_html(token, it["id"], ft, fn, it.get("has_thumb"))
             if it.get("preview"):
                 sub_qs = f'&sub={sub_param}' if sub_param else ''
                 view_href = f'/s/{token}/view?fid={it["id"]}{sub_qs}'
                 rows += (
                     f'<div class="sri" style="cursor:pointer;position:relative" onclick="bar(true);location.href=\'{view_href}\'">'
-                    f'<div class="sri-icon">{_file_icon(ft,28,fn)}</div>'
+                    f'<div class="sri-icon">{icon_html}</div>'
                     f'<div class="sri-info"><div class="sri-name">{fn}</div>'
                     f'<div class="sri-meta"><span class="sri-size">{sz}</span></div></div>'
                     f'<a href="{dl_href}" class="sri-dl-btn" onclick="event.stopPropagation()" title="Download">'
@@ -3238,7 +3367,7 @@ def _share_rows_html(token, sub_param, items):
             else:
                 rows += (
                     f'<a class="sri" href="{dl_href}" style="text-decoration:none">'
-                    f'<div class="sri-icon">{_file_icon(ft,28,fn)}</div>'
+                    f'<div class="sri-icon">{icon_html}</div>'
                     f'<div class="sri-info"><div class="sri-name">{fn}</div>'
                     f'<div class="sri-meta"><span class="sri-size">{sz}</span></div></div>'
                     f'<span class="btn-icon sri-dl-btn" style="pointer-events:none">{_icon("download",18)}</span></a>'
@@ -3535,6 +3664,70 @@ async def handle_share_preview(request):
     )
 
 
+async def handle_share_thumb(request):
+    """GET /s/{token}/thumb?fid= — small preview image for a file inside a
+    public share (folder rows, or a single shared file). Same ownership/path
+    checks as download & preview, just serving `thumb_file_id` instead of the
+    full file. Token-scoped so it works without a login cookie."""
+    doc = await _load_share_or_404(request)
+    if not _share_password_ok(request, doc):
+        raise web.HTTPNotFound()  # don't leak existence of a thumb behind a password wall
+
+    files_col   = request.app["files_col"]
+    folders_col = request.app["folders_col"]
+    bot         = request.app.get("bot_instance")
+    uid         = doc["user_id"]
+
+    if doc["resource_type"] == "file":
+        file_doc = await files_col.find_one({"_id": ObjectId(doc["resource_id"]), "user_id": uid})
+    else:
+        fid = request.rel_url.query.get("fid", "")
+        if not fid:
+            raise web.HTTPNotFound()
+        try:
+            file_doc = await files_col.find_one({"_id": ObjectId(fid), "user_id": uid})
+        except Exception:
+            raise web.HTTPNotFound()
+        if not file_doc or not await _is_descendant(
+            folders_col, uid, file_doc.get("folder_id", ""), doc["resource_id"]
+        ):
+            raise web.HTTPNotFound()
+
+    if not file_doc or not bot:
+        raise web.HTTPNotFound()
+
+    thumb_fid = file_doc.get("thumb_file_id")
+    if not thumb_fid:
+        raise web.HTTPNotFound()
+
+    cache_key = f"share:{file_doc['_id']}"
+    cache = request.app["_thumb_cache"]
+    cached = cache.get(cache_key)
+    if cached is not None:
+        if cached is False:
+            raise web.HTTPNotFound()
+        return web.Response(body=cached, content_type="image/jpeg",
+                             headers={"Cache-Control": "public, max-age=86400, immutable"})
+
+    data = None
+    try:
+        f = await bot.download_media(thumb_fid, in_memory=True)
+        if f:
+            data = bytes(f.getbuffer())
+    except Exception as e:
+        logger.error(f"Share thumb fetch error for fid={file_doc['_id']}: {e}", exc_info=True)
+        data = None
+
+    if len(cache) >= _THUMB_CACHE_MAX:
+        cache.pop(next(iter(cache)))
+    cache[cache_key] = data if data else False
+
+    if not data:
+        raise web.HTTPNotFound()
+    return web.Response(body=data, content_type="image/jpeg",
+                         headers={"Cache-Control": "public, max-age=86400, immutable"})
+
+
 async def handle_logo(request):
     import os
     logo_path = os.path.join(os.path.dirname(__file__), '..', 'logo.png')
@@ -3567,12 +3760,14 @@ def create_app(files_col, folders_col, settings_col, bot_instance=None, shares_c
     app["shares_col"]   = shares_col
     app["bot_instance"] = bot_instance
     app["_avatar_cache"] = {}
+    app["_thumb_cache"] = {}
 
     app.router.add_route("GET",  "/",               handle_login)
     app.router.add_route("POST", "/",               handle_login)
     app.router.add_get("/logo.png",                 handle_logo)
     app.router.add_get("/favicon.ico",               handle_favicon)
     app.router.add_get("/avatar.png",                handle_avatar)
+    app.router.add_get("/api/thumb/{fid}",           api_thumb)
     app.router.add_get("/logout",                   handle_logout)
     app.router.add_get("/drive",                    handle_drive)
     app.router.add_get("/files",                    handle_drive)
@@ -3602,6 +3797,7 @@ def create_app(files_col, folders_col, settings_col, bot_instance=None, shares_c
     app.router.add_post("/s/{token}",           handle_share_unlock)
     app.router.add_get("/s/{token}/download",   handle_share_download)
     app.router.add_get("/s/{token}/preview",    handle_share_preview)
+    app.router.add_get("/s/{token}/thumb",       handle_share_thumb)
     app.router.add_get("/s/{token}/view",       handle_share_file_view)
     app.router.add_get("/s/{token}/api/list",   handle_share_api_list)
 
