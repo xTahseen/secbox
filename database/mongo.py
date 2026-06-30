@@ -24,6 +24,7 @@ files = db.files
 settings = db.settings   # stores default_folder per user
 sticker_packs = db.sticker_packs   # one doc per (user_id, kind) — tracks the real Telegram pack created for that user
 shares = db.shares   # public share links: { user_id, resource_type, resource_id, token, password_hash, created_at }
+users = db.users   # one doc per user who has ever started the bot: { user_id, username, first_name, joined_at }
 
 
 async def ensure_indexes():
@@ -71,6 +72,10 @@ async def ensure_indexes():
         # shares: kept here too so all index setup lives in one place.
         (shares, "token", {"unique": True}),
         (shares, [("user_id", 1), ("resource_type", 1), ("resource_id", 1)], {}),
+
+        # users: one doc per user who has ever /start'd the bot — used for
+        # join-notification dedup and the admin /stats command.
+        (users, "user_id", {"unique": True}),
     ]
 
     for col, keys, kwargs in index_jobs:
