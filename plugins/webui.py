@@ -614,7 +614,7 @@ async def handle_login(request):
                         ]
                     })
                 if not doc or not doc.get("webui_password_hash"):
-                    error = "No account found with that username. Use /webui in the Telegram bot."
+                    error = "Incorrect username or password."
                 elif _hash_pw(pw) == doc["webui_password_hash"]:
                     uid  = doc.get("user_id", 0)
                     next_url = request.rel_url.query.get("next", "/drive")
