@@ -482,12 +482,43 @@ window.addEventListener('popstate',function(e){
 });
 """
 
+def _og_meta_tags(title, description, url_path="", image_path="/logo.png"):
+    """Build Open Graph / Twitter Card meta tags so links unfurl nicely when
+    shared on Telegram, WhatsApp, Discord, X, etc. Uses absolute URLs where
+    possible (via WEBUI_BASE_URL) since most crawlers ignore relative ones."""
+    import html as _html
+    base = _share_base_url()
+    image_url = f"{base}{image_path}" if base else image_path
+    page_url  = f"{base}{url_path}" if base else url_path
+    t = _html.escape(title, quote=True)
+    d = _html.escape(description, quote=True)
+    tags = (
+        f"<meta property='og:title' content='{t}'>"
+        f"<meta property='og:description' content='{d}'>"
+        f"<meta property='og:image' content='{image_url}'>"
+        "<meta property='og:type' content='website'>"
+        "<meta name='twitter:card' content='summary'>"
+        f"<meta name='twitter:title' content='{t}'>"
+        f"<meta name='twitter:description' content='{d}'>"
+        f"<meta name='twitter:image' content='{image_url}'>"
+    )
+    if page_url:
+        tags += f"<meta property='og:url' content='{page_url}'>"
+    return tags
+
+
 def _page(body, title="SecureBox"):
+    og = _og_meta_tags(
+        f"{title} — SecureBox" if title != "SecureBox" else "SecureBox",
+        "Your personal file storage, powered by Telegram.",
+    )
     return web.Response(content_type="text/html", text=(
         "<!DOCTYPE html><html lang='en'><head>"
         "<meta charset='UTF-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1'>"
         f"<title>{title} — SecureBox</title>"
+        "<link rel='icon' type='image/png' href='/favicon.ico'>"
+        f"{og}"
         "<link rel='preconnect' href='https://fonts.googleapis.com'>"
         "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
         "<link href='https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@400;500;700&display=swap' rel='stylesheet'>"
@@ -2961,11 +2992,18 @@ document.addEventListener('DOMContentLoaded',function(){{
 }});
 """
 
+    og = _og_meta_tags(
+        title,
+        "Shared via SecureBox \u00b7 tap to preview.",
+        url_path=f"/s/{token}",
+    )
     html = (
         "<!DOCTYPE html><html lang='en'><head>"
         "<meta charset='UTF-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1'>"
         f"<title>{title} — SecureBox</title>"
+        "<link rel='icon' type='image/png' href='/favicon.ico'>"
+        f"{og}"
         "<link rel='preconnect' href='https://fonts.googleapis.com'>"
         "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
         "<link href='https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@400;500;700&display=swap' rel='stylesheet'>"
@@ -2978,12 +3016,16 @@ document.addEventListener('DOMContentLoaded',function(){{
     return web.Response(content_type="text/html", text=html)
 
 
-def _share_page(body, title="Shared"):
+def _share_page(body, title="Shared", description=None, og_url=""):
+    desc = description or f"{title} was shared with you via SecureBox."
+    og = _og_meta_tags(title, desc, url_path=og_url)
     return web.Response(content_type="text/html", text=(
         "<!DOCTYPE html><html lang='en'><head>"
         "<meta charset='UTF-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1'>"
         f"<title>{title} — SecureBox</title>"
+        "<link rel='icon' type='image/png' href='/favicon.ico'>"
+        f"{og}"
         "<link rel='preconnect' href='https://fonts.googleapis.com'>"
         "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
         "<link href='https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&family=Roboto:wght@400;500;700&display=swap' rel='stylesheet'>"
@@ -3033,7 +3075,11 @@ async def handle_share_view(request):
     folders show a simple public browser. Prompts for a password if set."""
     doc = await _load_share_or_404(request)
     if not _share_password_ok(request, doc):
-        return _share_page(_share_password_form(doc["token"]), "Protected link")
+        return _share_page(
+            _share_password_form(doc["token"]), "Protected link",
+            description="This link is password-protected \u00b7 SecureBox",
+            og_url=f"/s/{doc['token']}",
+        )
 
     resource = await _resolve_share_resource(request, doc)
     if not resource:
@@ -3065,7 +3111,11 @@ async def handle_share_view(request):
                 f'{_icon("download",16)} Download</a>'
                 "</div></div>"
             )
-            return _share_page(body, name)
+            return _share_page(
+                body, name,
+                description=f"{size} \u00b7 Shared via SecureBox" if size else "Shared via SecureBox",
+                og_url=f"/s/{token}",
+            )
 
     # Folder — render a simple recursive listing with download links
     return await _render_share_folder(request, doc, resource)
@@ -3076,7 +3126,11 @@ async def handle_share_unlock(request):
     body = await request.post()
     pw   = (body.get("password") or "").strip()
     if not doc.get("password_hash") or _hash_pw(pw) != doc["password_hash"]:
-        return _share_page(_share_password_form(doc["token"], "Incorrect password."), "Protected link")
+        return _share_page(
+            _share_password_form(doc["token"], "Incorrect password."), "Protected link",
+            description="This link is password-protected \u00b7 SecureBox",
+            og_url=f"/s/{doc['token']}",
+        )
     resp = web.HTTPFound(f"/s/{doc['token']}")
     resp.set_cookie(_PW_COOKIE_PREFIX + doc["token"], _share_sign_pw(doc["token"]),
                      max_age=86400, httponly=True, samesite="Lax")
@@ -3158,7 +3212,13 @@ async def _render_share_folder(request, doc, folder):
         f'<div style="border:1px solid var(--border);border-radius:var(--r12);overflow:hidden;margin-top:10px">{rows}</div>'
         "</div>"
     )
-    return _share_page(body, current_name)
+    n_items = len(sub_folders) + len(sub_files)
+    item_desc = f"{n_items} item{'s' if n_items != 1 else ''} \u00b7 Shared folder via SecureBox"
+    return _share_page(
+        body, current_name,
+        description=item_desc,
+        og_url=f"/s/{doc['token']}" + (f"?sub={sub_param}" if sub_param else ""),
+    )
 
 async def handle_share_file_view(request):
     """GET /s/{token}/view?fid= — open a specific file from a folder share in our player.
@@ -3332,6 +3392,18 @@ async def handle_logo(request):
                         headers={'Cache-Control': 'public, max-age=86400'})
 
 
+async def handle_favicon(request):
+    import os
+    logo_path = os.path.join(os.path.dirname(__file__), '..', 'logo.png')
+    logo_path = os.path.abspath(logo_path)
+    if not os.path.exists(logo_path):
+        raise web.HTTPNotFound()
+    with open(logo_path, 'rb') as f:
+        data = f.read()
+    return web.Response(body=data, content_type='image/png',
+                        headers={'Cache-Control': 'public, max-age=86400'})
+
+
 def create_app(files_col, folders_col, settings_col, bot_instance=None, shares_col=None):
     app = web.Application(client_max_size=2 * 1024 * 1024 * 1024)  # 2 GB
     app["files_col"]    = files_col
@@ -3344,6 +3416,7 @@ def create_app(files_col, folders_col, settings_col, bot_instance=None, shares_c
     app.router.add_route("GET",  "/",               handle_login)
     app.router.add_route("POST", "/",               handle_login)
     app.router.add_get("/logo.png",                 handle_logo)
+    app.router.add_get("/favicon.ico",               handle_favicon)
     app.router.add_get("/avatar.png",                handle_avatar)
     app.router.add_get("/logout",                   handle_logout)
     app.router.add_get("/drive",                    handle_drive)
