@@ -30,14 +30,10 @@ logger = logging.getLogger(__name__)
 
 _KIND_LABEL = {"static": "🖼️ Static", "animated": "✨ Animated", "video": "🎞️ Video"}
 
-_bot_username = None  # cached after first lookup
+_bot_username = None
 
-# RPC error IDs (as raised by Telegram) that mean "this short_name is taken,
-# try a different one" — we retry with a new random suffix in these cases.
 _NAME_TAKEN_IDS = {"SHORT_NAME_OCCUPIED", "SHORTNAME_OCCUPY_FAILED"}
 
-# RPC error IDs that mean "this pack can't take any more stickers" — we spin
-# up a fresh overflow pack in these cases.
 _PACK_FULL_IDS = {"STICKERS_TOO_MUCH"}
 
 
@@ -145,7 +141,6 @@ async def _get_or_create_pack(client: Client, message, kind: str, sticker):
                 raise
             logger.info(f"Pack {short_name} full for user {user_id} ({kind}); creating overflow pack.")
 
-    # Need to create a pack (first one ever, or an overflow one).
     suffix = (existing.get("suffix", 1) + 1) if existing else 1
 
     last_err = None
@@ -171,7 +166,7 @@ async def _get_or_create_pack(client: Client, message, kind: str, sticker):
         except RPCError as e:
             last_err = e
             if _rpc_id(e) in _NAME_TAKEN_IDS:
-                continue  # name collision — try another random suffix
+                continue
             raise
 
     raise last_err or RuntimeError("Could not create sticker pack")

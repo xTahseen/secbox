@@ -7,11 +7,6 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# maxPoolSize/minPoolSize: with thousands of users hitting the bot + WebUI
-# concurrently, the default pool (100) can queue up under load. These are
-# generous but bounded so a single deployment can't exhaust MongoDB's own
-# connection limit. waitQueueTimeoutMS makes pool exhaustion fail fast with a
-# clear error instead of hanging requests indefinitely.
 client = AsyncIOMotorClient(
     os.getenv("MONGO_URI"),
     maxPoolSize=200,
@@ -21,10 +16,10 @@ client = AsyncIOMotorClient(
 db = client[os.getenv("DATABASE_NAME")]
 folders = db.folders
 files = db.files
-settings = db.settings   # stores default_folder per user
-sticker_packs = db.sticker_packs   # one doc per (user_id, kind) — tracks the real Telegram pack created for that user
-shares = db.shares   # public share links: { user_id, resource_type, resource_id, token, password_hash, created_at }
-users = db.users   # one doc per user who has ever started the bot: { user_id, username, first_name, joined_at }
+settings = db.settings
+sticker_packs = db.sticker_packs
+shares = db.shares
+users = db.users
 
 
 async def ensure_indexes():
@@ -43,38 +38,20 @@ async def ensure_indexes():
     from being created.
     """
     index_jobs = [
-        # folders: looked up by user_id+parent_id (listing a folder's children).
-        # _id point lookups are already covered by Mongo's default _id index.
         (folders, [("user_id", 1), ("parent_id", 1)], {}),
 
-        # files: looked up by user_id+folder_id (listing a folder's files),
-        # sorted by _id descending (newest first) — folding _id into the index
-        # lets Mongo satisfy that sort without an extra in-memory sort step.
         (files, [("user_id", 1), ("folder_id", 1), ("_id", -1)], {}),
-        # Plain user_id index for count_documents({"user_id": uid}) (api_stats)
-        # and inline-search queries, which filter by user_id alone.
         (files, "user_id", {}),
-        # Case-insensitive filename search (api_search, inline mode) — a text
-        # index lets Mongo use a real index instead of scanning every
-        # document's file_name with a regex.
         (files, [("file_name", "text")], {}),
 
-        # settings: looked up by user_id (every keyboard render, /webui, login
-        # display-name lookup) and by webui_username (WebUI login). Partial
-        # index restricted to docs that actually have the field avoids
-        # breaking on existing data with no webui_username set.
         (settings, "user_id", {}),
         (settings, "webui_username", {"partialFilterExpression": {"webui_username": {"$exists": True}}}),
 
-        # sticker_packs: looked up by (user_id, kind) on every sticker sent.
         (sticker_packs, [("user_id", 1), ("kind", 1)], {}),
 
-        # shares: kept here too so all index setup lives in one place.
         (shares, "token", {"unique": True}),
         (shares, [("user_id", 1), ("resource_type", 1), ("resource_id", 1)], {}),
 
-        # users: one doc per user who has ever /start'd the bot — used for
-        # join-notification dedup and the admin /stats command.
         (users, "user_id", {"unique": True}),
     ]
 

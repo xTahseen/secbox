@@ -3,8 +3,6 @@ from pyrogram import Client, filters
 from database.mongo import users, files
 from utils.format import fmt_size
 
-# Comma-separated list of Telegram user_ids allowed to run admin commands,
-# e.g. ADMIN_IDS=123456789,987654321
 _ADMIN_IDS = {
     int(uid) for uid in os.getenv("ADMIN_IDS", "").split(",") if uid.strip().isdigit()
 }
@@ -16,9 +14,6 @@ def is_admin(_, __, message):
 
 admin_filter = filters.create(is_admin)
 
-# NOTE: /stats is deliberately NOT added to bot.py's set_bot_commands(), so
-# it never appears in the Telegram command menu — admin_filter is what
-# actually restricts who can use it, the omission just keeps it hidden.
 
 
 @Client.on_message(filters.command("stats") & admin_filter)

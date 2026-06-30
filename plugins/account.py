@@ -3,9 +3,8 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 from database.mongo import settings
 
-# ── Conversation state: {user_id: "awaiting_username" | "awaiting_password"}
 _state    = {}
-_tmp_user = {}  # user_id → chosen username (held between steps)
+_tmp_user = {}
 
 
 def _hash(pw: str) -> str:
@@ -47,7 +46,6 @@ async def _show_webui_panel(message, user_id, edit=False):
         await message.reply_text(text, reply_markup=markup)
 
 
-# ── /webui command ─────────────────────────────────────────────────────────────
 
 @Client.on_message(filters.command("webui") & filters.private)
 async def webui_cmd(_, message):
@@ -56,7 +54,6 @@ async def webui_cmd(_, message):
     await _show_webui_panel(message, message.from_user.id)
 
 
-# ── Callbacks ──────────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex("^webui_set$"))
 async def webui_set(_, query):
@@ -124,7 +121,6 @@ async def webui_cancel(_, query):
     await _show_webui_panel(query.message, uid, edit=True)
 
 
-# ── Reply handler for username / password steps ────────────────────────────────
 
 async def webui_reply_handler(_, message):
     uid = message.from_user.id
@@ -135,7 +131,6 @@ async def webui_reply_handler(_, message):
     text = message.text.strip()
 
     if step == "awaiting_username":
-        # Validate username
         import re
         if len(text) < 3:
             return await message.reply_text("⚠️ Username must be at least 3 characters. Try again:")
@@ -144,7 +139,6 @@ async def webui_reply_handler(_, message):
 
         username = text.lower()
 
-        # Check if username is taken by another user
         existing = await settings.find_one({"webui_username": username})
         if existing and existing.get("user_id") != uid:
             return await message.reply_text(
@@ -181,10 +175,6 @@ async def webui_reply_handler(_, message):
                     "webui_password_hash": pw_hash,
                     "user_id":             uid,
                 },
-                # Bumping this invalidates every WebUI session cookie issued
-                # before this change (see require_auth's version check in
-                # webui.py) — so changing your password also logs out any
-                # browser that was already signed in with the old one.
                 "$inc": {"session_version": 1},
             },
             upsert=True
@@ -193,7 +183,6 @@ async def webui_reply_handler(_, message):
         _state.pop(uid, None)
         _tmp_user.pop(uid, None)
 
-        # Try to delete the password message for security
         try:
             await message.delete()
         except Exception:

@@ -17,10 +17,9 @@ from bson import ObjectId
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = 1024 * 1024  # 1 MiB
+CHUNK_SIZE = 1024 * 1024
 
 
-# ── Streaming helper ──────────────────────────────────────────────────────────
 
 async def _get_file_size(client, tg_file_id):
     """Probe Telegram for the real file size when it's missing from the DB."""
@@ -35,8 +34,6 @@ async def _pyro_stream_response(request, client, tg_file_id, file_size, file_nam
                                 content_type, disposition="inline"):
     """Stream a Telegram file via Pyrogram MTProto (supports Range requests)."""
 
-    # If file_size is missing, ask Telegram — this is required for proper
-    # HTTP Range support so browsers can seek/buffer without a full download.
     if not file_size:
         file_size = await _get_file_size(client, tg_file_id)
 
@@ -68,7 +65,6 @@ async def _pyro_stream_response(request, client, tg_file_id, file_size, file_nam
     await resp.prepare(request)
 
     if not file_size:
-        # Last resort: stream without range support
         async for chunk in client.stream_media(tg_file_id):
             await resp.write(chunk)
         await resp.write_eof()
@@ -98,7 +94,6 @@ async def _pyro_stream_response(request, client, tg_file_id, file_size, file_nam
     return resp
 
 
-# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def _secret():
     return os.getenv("WEBUI_SECRET_KEY", "securebox-secret-change-me")
@@ -120,7 +115,7 @@ def _verify(token):
     except Exception:
         return None
 
-SESSION_TTL = 6 * 3600  # 6 hours — both the cookie's max_age and the signed exp claim
+SESSION_TTL = 6 * 3600
 
 def _make_token(uid, ver=0):
     return _sign({"uid": uid, "ver": ver, "exp": time.time() + SESSION_TTL})
@@ -136,22 +131,11 @@ def _fmt_size(b):
         b /= 1024
     return f"{b:.2f} TB"
 
-# ── Public share links ───────────────────────────────────────────────────────
-# shares collection schema:
-#   { _id, user_id, resource_type: "file"|"folder", resource_id (str),
-#     token (str, unique, url-safe), password_hash (str|None), created_at }
-#
-# A resource (file or folder) has at most one active share document. Sharing
-# again while one exists rotates/updates that same document instead of
-# creating duplicates, so a given file/folder always maps to one stable token.
 
 def _gen_share_token():
     return secrets.token_urlsafe(16)
 
 def _share_base_url():
-    # Reuse the WEBUI_BASE_URL convention used elsewhere in the bot (e.g.
-    # plugins/callbacks.py), but strip any path it might already carry (it's
-    # normally set to something like "https://host/drive?folder=").
     raw = os.getenv("WEBUI_BASE_URL", "")
     if raw:
         for cut in ("/drive", "/files"):
@@ -213,10 +197,6 @@ def require_auth(handler):
         tok = request.cookies.get("session")
         p   = _verify(tok) if tok else None
         if p:
-            # A signature+exp check alone isn't enough to catch "this account's
-            # credentials were changed/cleared since this cookie was issued" —
-            # that requires a live DB check against session_version, which
-            # account.py bumps on password change and on account clear.
             settings_col = request.app["settings_col"]
             doc = await settings_col.find_one({"user_id": p["uid"]})
             current_ver = (doc or {}).get("session_version", 0)
@@ -231,7 +211,6 @@ def require_auth(handler):
     return wrapper
 
 
-# ── SVG Icons ─────────────────────────────────────────────────────────────────
 
 def _icon(name, size=20, cls="", bg=None):
     ca = f' class="{cls}"' if cls else ""
@@ -270,8 +249,6 @@ def _icon(name, size=20, cls="", bg=None):
     return svg
 
 def _file_icon(ft, size=20, file_name=""):
-    # Resolve the effective type: documents with video/audio/image extensions
-    # should show the matching icon, consistent with the webui file manager.
     if ft == "document" and file_name:
         resolved = _get_share_preview_kind(ft, file_name)
         if resolved in ("video", "audio", "photo"):
@@ -331,14 +308,12 @@ def _get_share_preview_kind(ft, file_name):
             return "photo"
         if ext in _PREVIEW_TXT_EXTS:
             return "text"
-        # plain text fallback — browser will try to render it
         if "." not in file_name or ext in {"pdf"}:
             return None
-        return "text"  # attempt text viewer for unknown docs
+        return "text"
     return None
 
 
-# ── CSS ───────────────────────────────────────────────────────────────────────
 
 _CSS = """
 :root{--bg:#000000;--header:#171717;--surface:#1a1a1a;--surface2:#222222;--surface3:#2a2a2a;--border:#2c2c2c;--border2:#3a3a3a;--accent:#0483c3;--accent2:#0369a1;--accent-dim:rgba(4,131,195,.13);--green:#22c55e;--red:#ef4444;--yellow:#f59e0b;--fab:#ffb200;--fab2:#e6a000;--text:#f0f0f0;--text2:#a0a0a0;--text3:#555;--folder:#0483c3;--r4:4px;--r8:8px;--r12:12px;--r16:16px;--sans:'Google Sans','Roboto','Segoe UI',system-ui,-apple-system,sans-serif;--shadow:0 8px 32px rgba(0,0,0,.6)}
@@ -465,7 +440,6 @@ body.select-mode.share-eligible #fab-share{display:flex}
 """
 
 
-# ── Shared JS ─────────────────────────────────────────────────────────────────
 
 _JS_BASE = """
 function toast(msg,type){var t=document.getElementById('toast');t.textContent=msg;t.className='show '+(type||'');clearTimeout(t._t);t._t=setTimeout(function(){t.className=''},3500);}
@@ -571,7 +545,6 @@ def _page(body, title="SecureBox"):
     ))
 
 
-# ── Login ──────────────────────────────────────────────────────────────────────
 
 async def handle_login(request):
     try:
@@ -597,14 +570,10 @@ async def handle_login(request):
             if not username_in:
                 error = "Please enter your username."
             else:
-                # Look up by webui_username first (new accounts), then fall back
-                # to matching against Telegram @username stored in user records.
                 doc = await settings_col.find_one({
                     "webui_username": username_in,
                     "webui_password_hash": {"$exists": True},
                 })
-                # Fallback: account set password before username field was added —
-                # try matching the raw username field if present.
                 if not doc:
                     doc = await settings_col.find_one({
                         "webui_password_hash": {"$exists": True},
@@ -658,9 +627,8 @@ async def handle_logout(request):
     raise r
 
 
-# ── Avatar (Telegram profile photo) ─────────────────────────────────────────────
 
-_AVATAR_CACHE_TTL = 3600  # seconds
+_AVATAR_CACHE_TTL = 3600
 
 @require_auth
 async def handle_avatar(request):
@@ -700,10 +668,9 @@ async def handle_avatar(request):
                          headers={"Cache-Control": "private, max-age=3600"})
 
 
-# ── File thumbnails (photo / video / audio) ─────────────────────────────────────
 
-_THUMB_CACHE_TTL = 86400  # seconds — thumbnails never change for a given file
-_THUMB_CACHE_MAX = 2000   # cap in-memory entries so this can't grow unbounded
+_THUMB_CACHE_TTL = 86400
+_THUMB_CACHE_MAX = 2000
 
 @require_auth
 async def api_thumb(request):
@@ -752,7 +719,7 @@ async def api_thumb(request):
         data = None
 
     if len(cache) >= _THUMB_CACHE_MAX:
-        cache.pop(next(iter(cache)))  # evict oldest-inserted entry
+        cache.pop(next(iter(cache)))
     cache[fid] = data if data else False
 
     if not data:
@@ -761,7 +728,6 @@ async def api_thumb(request):
                          headers={"Cache-Control": "private, max-age=86400, immutable"})
 
 
-# ── Drive browser ──────────────────────────────────────────────────────────────
 
 @require_auth
 async def handle_drive(request):
@@ -770,7 +736,6 @@ async def handle_drive(request):
     settings_col = request.app["settings_col"]
     bot          = request.app["bot_instance"]
 
-    # Fetch user display info
     user_name   = "User"
     user_initials = "U"
     try:
@@ -786,7 +751,6 @@ async def handle_drive(request):
         pass
     user_initials = "".join(w[0].upper() for w in user_name.split()[:2]) or "U"
 
-    # Build sidebar — top-level folders only (subfolders are reached by navigating in)
     docs = await folders_col.find({
         "user_id": uid,
         "$or": [{"parent_id": None}, {"parent_id": {"$exists": False}}],
@@ -2037,7 +2001,6 @@ document.addEventListener('keydown',function(e){
         f'<button class="sel-btn" onclick="selRename()">{_icon("rename",20)}<span>Rename</span></button>'
         f'<button class="sel-btn danger" onclick="selDel()">{_icon("delete",20)}<span>Delete</span></button>'
         "</div>"
-        # Modals
         '<div class="moverlay" id="m-rename"><div class="modal">'
         f'<div class="modal-title">{_icon("rename",18)} Rename</div>'
         '<div class="fg"><label>New name</label><input id="i-rename" type="text"></div>'
@@ -2110,7 +2073,6 @@ document.addEventListener('keydown',function(e){
         '<div id="search-res" style="max-height:340px;overflow-y:auto;margin-top:12px;border:1px solid var(--border);border-radius:var(--r8)"></div>'
         "<div class=\"macts\"><button class=\"btn btn-ghost btn-sm\" onclick=\"clearSel();closeModal('search')\">Close</button></div>"
         "</div></div>"
-        # Preview overlay
         '<div id="preview-overlay">'
         '<div id="preview-bar">'
         '<button id="preview-close-btn" onclick="closePreview()">'
@@ -2134,7 +2096,6 @@ document.addEventListener('keydown',function(e){
     return _page(body, "My Drive")
 
 
-# ── API — compatible with bot's DB schema ─────────────────────────────────────
 
 @require_auth
 async def api_files(request):
@@ -2154,8 +2115,6 @@ async def api_files(request):
     else:
         parent_id = folder_param
 
-    # Subfolders directly under this folder (root = parent_id None, including
-    # legacy folders saved without a parent_id field at all).
     if parent_id is None:
         folder_query = {"user_id": uid, "$or": [{"parent_id": None}, {"parent_id": {"$exists": False}}]}
     else:
@@ -2164,7 +2123,6 @@ async def api_files(request):
     docs = await folders_col.find(folder_query).sort("name", 1).to_list(500)
     sub_folders = [{"name": d.get("name", ""), "_id": str(d["_id"])} for d in docs if d.get("name")]
 
-    # Files stored directly in this folder. Root files have folder_id == "" (or missing).
     if parent_id is None:
         file_query = {"user_id": uid, "$or": [{"folder_id": ""}, {"folder_id": {"$exists": False}}, {"folder_id": None}]}
     else:
@@ -2175,17 +2133,15 @@ async def api_files(request):
 
     def ser(f):
         oid             = f["_id"]
-        # ObjectId first 4 bytes = Unix timestamp in seconds
         ts_ms           = oid.generation_time.timestamp() * 1000
         f["_id"]        = str(oid)
         f["file_name"]  = f.get("file_name", "file")
         f["file_type"]  = f.get("file_type", "document")
-        f["created_at"] = ts_ms          # milliseconds — JS new Date(ms) works correctly
+        f["created_at"] = ts_ms
         return f
 
     files_ser = [ser(f) for f in raw]
 
-    # Attach a "shared" badge flag to folders & files in one bulk query.
     share_map = await _shares_index_map(
         shares_col, uid,
         file_ids=[f["_id"] for f in files_ser],
@@ -2196,7 +2152,6 @@ async def api_files(request):
     for f in files_ser:
         f["shared"] = ("file", f["_id"]) in share_map
 
-    # Resolve the current folder's name so the client can build breadcrumbs
     current_folder_name = "My Drive"
     if parent_id is not None:
         from bson import ObjectId as _OID
@@ -2278,7 +2233,6 @@ async def api_rename_folder(request):
         {"_id": ObjectId(fid), "user_id": uid},
         {"$set": {"name": name}}
     )
-    # Keep folder_name in files in sync
     await files_col.update_many({"folder_id": fid, "user_id": uid}, {"$set": {"folder_name": name}})
     return web.json_response({"ok": True})
 
@@ -2293,7 +2247,6 @@ async def api_delete_folder(request):
     settings_col = request.app["settings_col"]
     shares_col  = request.app["shares_col"]
 
-    # Verify ownership
     folder = await folders_col.find_one({"_id": ObjectId(fid), "user_id": uid})
     if not folder:
         raise web.HTTPNotFound()
@@ -2502,7 +2455,6 @@ async def api_search(request):
     return web.json_response({"files": files_ser})
 
 
-# ── Share management API (auth'd owner side) ──────────────────────────────────
 
 async def _resource_exists(request, resource_type, resource_id, uid):
     try:
@@ -2553,7 +2505,7 @@ async def api_share_set(request):
 
     body     = await request.json()
     enabled  = bool(body.get("enabled", True))
-    password = body.get("password", None)  # None = leave unchanged; "" = remove; str = set
+    password = body.get("password", None)
 
     existing = await _find_share(shares_col, resource_type, resource_id, uid)
 
@@ -2648,19 +2600,14 @@ async def api_preview(request):
         ft        = doc.get("file_type", "document")
         if not tg_fid:
             raise web.HTTPNotFound(reason="No file_id stored")
-        # Map file_type → default MIME
         mime_map = {
             "photo": "image/jpeg", "video": "video/mp4",
             "audio": "audio/mpeg",
         }
         ct = mime_map.get(ft, "application/octet-stream")
-        # Extension overrides take priority — critical for non-mp4 video files
-        # stored as "document" type (mkv, webm, avi…) or non-mp3 audio.
         ext_map = {
-            # images
             "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
             "gif": "image/gif",  "webp": "image/webp", "bmp": "image/bmp",
-            # video — all formats browsers can play natively
             "mp4":  "video/mp4",  "m4v": "video/mp4",
             "webm": "video/webm", "ogv": "video/ogg",
             "mov":  "video/quicktime",
@@ -2668,20 +2615,16 @@ async def api_preview(request):
             "avi":  "video/x-msvideo",
             "3gp":  "video/3gpp",
             "flv":  "video/x-flv",
-            # audio
             "mp3":  "audio/mpeg",  "m4a": "audio/mp4",
             "ogg":  "audio/ogg",   "oga": "audio/ogg",
             "opus": "audio/opus",  "wav": "audio/wav",
             "flac": "audio/flac",  "aac": "audio/aac",
             "weba": "audio/webm",
-            # docs
             "pdf": "application/pdf",
         }
         ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
         if ext in ext_map:
             ct = ext_map[ext]
-        # If Telegram stored a mime_type (e.g. for documents), use it as the
-        # most authoritative source — but only for streamable media types.
         db_mime = doc.get("mime_type", "")
         if db_mime and not db_mime.startswith("application/"):
             ct = db_mime
@@ -2737,7 +2680,6 @@ async def api_upload(request):
         if tmp_path is None:
             raise web.HTTPBadRequest(reason="No file received")
 
-        # Classify by extension
         ext = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
         photo_exts = {"jpg", "jpeg", "png", "webp", "gif", "bmp", "tiff", "heic", "heif"}
         video_exts = {"mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv", "3gp"}
@@ -2752,14 +2694,10 @@ async def api_upload(request):
         else:
             ft = "document"
 
-        # Detect MIME type — critical for text/code files (.py, .md, etc.)
-        # Without this Telegram rejects or mishandles them.
         mime, _ = mimetypes.guess_type(file_name)
         if not mime:
-            # Fallback: treat unknown types as binary stream
             mime = "application/octet-stream"
 
-        # Send using the right Telegram method — no caption needed
         if ft == "photo":
             sent = await bot_inst.send_photo(uid, tmp_path)
         elif ft == "video":
@@ -2767,9 +2705,6 @@ async def api_upload(request):
         elif ft == "audio":
             sent = await bot_inst.send_audio(uid, tmp_path)
         else:
-            # force_document=True ensures Telegram never auto-converts the file.
-            # file_name preserves the original name (including extension) so that
-            # text/code files like .py, .json, .md, .txt are stored correctly.
             sent = await bot_inst.send_document(
                 uid,
                 tmp_path,
@@ -2780,7 +2715,6 @@ async def api_upload(request):
         os.unlink(tmp_path)
         tmp_path = None
 
-        # Resolve folder
         folder_id_str = ""
         folder_name   = ""
         if folder_id_param:
@@ -2789,7 +2723,6 @@ async def api_upload(request):
                 folder_id_str = str(folder_doc["_id"])
                 folder_name   = folder_doc.get("name", "")
 
-        # Extract file_id and file_size from the sent message
         if ft == "photo" and sent.photo:
             file_id   = sent.photo.file_id
             file_size = sent.photo.file_size
@@ -2831,7 +2764,6 @@ async def api_upload(request):
                 pass
 
 
-# ── Public share pages (no auth — gated by token + optional password) ─────────
 
 _PW_COOKIE_PREFIX = "spw_"
 
@@ -2866,7 +2798,6 @@ def _build_share_player_page(token, title, files, auto_fid, dl_url, back_url=Non
         "};"
     )
 
-    # Serialize file list for JS
     files_js = _json.dumps([{"_id": str(f["_id"]), "file_name": f.get("file_name",""), "file_type": f.get("file_type","document")} for f in files])
 
     back_btn_html = ""
@@ -2895,9 +2826,6 @@ def _build_share_player_page(token, title, files, auto_fid, dl_url, back_url=Non
         '</div></div></div>'
     )
 
-    # JS: player functions with preview URL adapted to share endpoint
-    # We replace /api/preview/{id} with /s/{token}/preview?fid={id}
-    # and previewDownload uses the per-file download URL
     js = f"""
 {ic_js_init}
 var _pvId=null, _pvFiles={files_js}, _pvToken='{token}';
@@ -3250,7 +3178,6 @@ async def handle_share_view(request):
                 og_url=f"/s/{token}",
             )
 
-    # Folder — render a simple recursive listing with download links
     return await _render_share_folder(request, doc, resource)
 
 async def handle_share_unlock(request):
@@ -3526,7 +3453,6 @@ async def handle_share_file_view(request):
     except Exception:
         raise web.HTTPNotFound()
 
-    # Verify the file lives inside the shared folder (or a subfolder of it)
     if doc["resource_type"] != "folder":
         raise web.HTTPNotFound()
     if not file_doc or not await _is_descendant(
@@ -3536,7 +3462,6 @@ async def handle_share_file_view(request):
 
     name = file_doc.get("file_name", "file")
     ft   = file_doc.get("file_type", "document")
-    # back URL: go to folder listing (with sub param if we came from a subfolder)
     back_url = f"/s/{token}" + (f"?sub={sub_param}" if sub_param else "")
 
     return _build_share_player_page(
@@ -3571,8 +3496,6 @@ async def handle_share_download(request):
             file_doc = await files_col.find_one({"_id": ObjectId(fid), "user_id": uid})
         except Exception:
             raise web.HTTPNotFound()
-        # Make sure the requested file actually lives inside the shared
-        # folder (or one of its subfolders) — never trust the fid alone.
         if not file_doc or not await _is_descendant(
             folders_col, uid, file_doc.get("folder_id", ""), doc["resource_id"]
         ):
@@ -3634,7 +3557,6 @@ async def handle_share_preview(request):
     if not tg_fid:
         raise web.HTTPNotFound(reason="No file_id stored")
 
-    # Determine content-type for inline display
     mime_map = {"photo": "image/jpeg", "video": "video/mp4", "audio": "audio/mpeg"}
     ct = mime_map.get(ft, "text/plain")
     ext_map = {
@@ -3671,7 +3593,7 @@ async def handle_share_thumb(request):
     full file. Token-scoped so it works without a login cookie."""
     doc = await _load_share_or_404(request)
     if not _share_password_ok(request, doc):
-        raise web.HTTPNotFound()  # don't leak existence of a thumb behind a password wall
+        raise web.HTTPNotFound()
 
     files_col   = request.app["files_col"]
     folders_col = request.app["folders_col"]
@@ -3753,7 +3675,7 @@ async def handle_favicon(request):
 
 
 def create_app(files_col, folders_col, settings_col, bot_instance=None, shares_col=None):
-    app = web.Application(client_max_size=2 * 1024 * 1024 * 1024)  # 2 GB
+    app = web.Application(client_max_size=2 * 1024 * 1024 * 1024)
     app["files_col"]    = files_col
     app["folders_col"]  = folders_col
     app["settings_col"] = settings_col
@@ -3787,12 +3709,10 @@ def create_app(files_col, folders_col, settings_col, bot_instance=None, shares_c
     app.router.add_get("/api/preview/{fid}",        api_preview)
     app.router.add_post("/api/upload",              api_upload)
 
-    # Share management (owner, authenticated)
     app.router.add_get("/api/share/{rtype}/{rid}",    api_share_get)
     app.router.add_post("/api/share/{rtype}/{rid}",   api_share_set)
     app.router.add_delete("/api/share/{rtype}/{rid}", api_share_clear)
 
-    # Public share pages (no auth — token + optional password gated)
     app.router.add_get("/s/{token}",            handle_share_view)
     app.router.add_post("/s/{token}",           handle_share_unlock)
     app.router.add_get("/s/{token}/download",   handle_share_download)
@@ -3802,10 +3722,6 @@ def create_app(files_col, folders_col, settings_col, bot_instance=None, shares_c
     app.router.add_get("/s/{token}/api/list",   handle_share_api_list)
 
     async def _ensure_indexes(app):
-        # Indexes for every collection (files/folders/settings/shares/etc.)
-        # are created centrally in database/mongo.ensure_indexes(), which
-        # bot.py already calls on startup. This stays here too so create_app()
-        # also works correctly if the WebUI is ever run standalone.
         try:
             from database.mongo import ensure_indexes
             await ensure_indexes()

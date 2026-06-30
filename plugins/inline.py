@@ -40,9 +40,6 @@ def _result_for(doc) -> "InlineQueryResultCachedDocument | InlineQueryResultCach
             description=f"{size_str} · {date_str}",
         )
 
-    # Documents, videos, audio, and anything else all go through as a
-    # generic cached document — Telegram accepts any file_id here regardless
-    # of its original media type, so this works for every kind we store.
     return InlineQueryResultCachedDocument(
         document_file_id=tg_id,
         title=name,
@@ -77,7 +74,6 @@ async def inline_file_search(_, inline_query):
         try:
             results.append(_result_for(doc))
         except Exception as e:
-            # Skip any single malformed doc rather than failing the whole query
             logger.warning(f"inline_file_search: skipping file {doc.get('_id')}: {e}")
 
     next_offset = str(offset + RESULTS_PER_PAGE) if len(docs) == RESULTS_PER_PAGE else ""

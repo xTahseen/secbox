@@ -8,9 +8,6 @@ from database.mongo import users
 async def start(client, message):
     user = message.from_user
 
-    # Insert a users doc only the first time this user is seen. find_one +
-    # insert_one (rather than upsert) lets us know cheaply whether this was
-    # a brand-new user, so we only fire the join notification once.
     existing = await users.find_one({"user_id": user.id})
     if not existing:
         await users.insert_one({

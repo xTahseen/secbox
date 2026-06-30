@@ -14,8 +14,6 @@ async def files_cmd(_, message):
     )
 
 
-# NOTE: video_note (round "telescope" videos) and voice (voice messages) were
-# previously missing from this filter, so the bot silently ignored them.
 @Client.on_message(
     filters.document | filters.video | filters.audio | filters.photo
     | filters.video_note | filters.voice
@@ -23,7 +21,6 @@ async def files_cmd(_, message):
 async def save_file(_, message):
     user_id = message.from_user.id
 
-    # Determine target folder from user's settings
     setting = await settings.find_one({"user_id": user_id})
     default_folder_id = setting.get("default_folder_id") if setting else None
 
@@ -36,7 +33,6 @@ async def save_file(_, message):
         if folder:
             folder_id_str = str(folder["_id"])
             folder_name   = folder["name"]
-        # Deleted folder → fall through to root
 
     if message.document:
         tg = message.document; ftype = "document"; name = tg.file_name or "document"
@@ -57,11 +53,6 @@ async def save_file(_, message):
     height    = getattr(tg, "height", None)
     mime_type = getattr(tg, "mime_type", None)
 
-    # Telegram sends a small low-res preview alongside documents/videos/audio
-    # (album art) as a list of `Thumbnail` objects under `.thumbs`, ordered
-    # smallest-first. We grab the smallest one for a fast/cheap WebUI grid
-    # thumbnail. Photos don't reliably expose a separate `.thumbs` list, so
-    # we fall back to the photo's own file_id (already a fairly small JPEG).
     thumb_file_id = None
     thumbs = getattr(tg, "thumbs", None)
     if thumbs:

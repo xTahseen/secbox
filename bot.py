@@ -51,18 +51,14 @@ async def main():
     site   = web.TCPSite(runner, webui_host, webui_port)
 
     async with app_client:
-        # Create/verify MongoDB indexes before serving any traffic — every
-        # folder/file/settings lookup the bot and WebUI make depends on these
-        # for speed at scale. Safe to run on every startup (no-op if present).
         from database.mongo import ensure_indexes
         await ensure_indexes()
 
-        # Sync bot commands with Telegram on every startup
         await _set_commands(app_client)
         await site.start()
         print("Bot started.")
         print(f"WebUI running at http://{webui_host}:{webui_port}")
-        await asyncio.Event().wait()   # run forever
+        await asyncio.Event().wait()
 
     await runner.cleanup()
 

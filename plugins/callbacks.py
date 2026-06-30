@@ -14,7 +14,6 @@ from utils.keyboards import (
 
 WEBUI_BASE = os.getenv("WEBUI_BASE_URL", "https://yourwebui.example.com/drive?folder=")
 
-# ─── Open Files UI (from /start button) ─────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^open_files_ui$"))
 async def open_files_ui(_, cq):
@@ -25,7 +24,6 @@ async def open_files_ui(_, cq):
     )
 
 
-# ─── Root pagination ────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^root_page:(\d+)$"))
 async def root_page(_, cq):
@@ -61,7 +59,6 @@ async def up_folder(_, cq):
     await cq.message.edit_text(f"📁 {folder['name']}", reply_markup=kb)
 
 
-# ─── Open folder ────────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^folder:([a-f0-9]+):(\d+)$"))
 async def open_folder(_, cq):
@@ -75,7 +72,6 @@ async def open_folder(_, cq):
     await cq.message.edit_text(f"📁 {folder['name']}", reply_markup=kb)
 
 
-# ─── Send file ──────────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^file:([a-f0-9]+)$"))
 async def file_send(_, cq):
@@ -96,7 +92,6 @@ async def file_send(_, cq):
         await cq.message.reply_document(tid)
 
 
-# ─── Folder Options panel ───────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^fopts:([a-f0-9]+)$"))
 async def folder_options(_, cq):
@@ -111,7 +106,6 @@ async def folder_options(_, cq):
     )
 
 
-# ─── New Folder ─────────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^new_folder:(root|[a-f0-9]+)$"))
 async def new_folder_prompt(_, cq):
@@ -131,7 +125,6 @@ async def new_folder_prompt(_, cq):
 async def handle_reply(_, message):
     if not message.reply_to_message:
         return
-    # Let account.py handle its own conversation steps
     from plugins.account import _state as _webui_state, webui_reply_handler
     if message.from_user.id in _webui_state:
         await webui_reply_handler(_, message)
@@ -140,7 +133,6 @@ async def handle_reply(_, message):
     text = replied.text or ""
     user_id = message.from_user.id
 
-    # New folder / subfolder
     if "Send me the new" in text and "folder name" in text:
         m = re.search(r"parent_id:([a-f0-9]+)", text)
         parent_id = m.group(1) if m else None
@@ -158,7 +150,6 @@ async def handle_reply(_, message):
                 reply_markup=await root_keyboard(user_id, 0)
             )
 
-    # Rename folder
     elif text.startswith("✏️ Enter new name for") and "folder_id:" in text:
         m = re.search(r"folder_id:([a-f0-9]+)", text)
         if not m:
@@ -176,12 +167,10 @@ async def handle_reply(_, message):
         }):
             return await message.reply_text("⚠️ A folder with that name already exists here.")
         await folders.update_one({"_id": ObjectId(folder_id)}, {"$set": {"name": new_name}})
-        # also update folder_name in files
         await files.update_many({"folder_id": folder_id}, {"$set": {"folder_name": new_name}})
         kb = await folder_keyboard(user_id, folder_id, new_name, 0)
         await message.reply_text(f"✅ Renamed to '{new_name}'", reply_markup=kb)
 
-    # Rename file
     elif text.startswith("✏️ Enter new name for") and "file_id:" in text:
         m = re.search(r"file_id:([a-f0-9]+)", text)
         if not m:
@@ -197,7 +186,6 @@ async def handle_reply(_, message):
         await message.reply_text(f"✅ Renamed to '{new_name}'")
 
 
-# ─── Rename ─────────────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^rename:([a-f0-9]+)$"))
 async def rename_prompt(_, cq):
@@ -212,7 +200,6 @@ async def rename_prompt(_, cq):
     )
 
 
-# ─── Rename file (saved-file confirmation buttons) ──────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^frename:([a-f0-9]+)$"))
 async def file_rename_prompt(_, cq):
@@ -227,7 +214,6 @@ async def file_rename_prompt(_, cq):
     )
 
 
-# ─── Delete file (saved-file confirmation buttons) ──────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^fdelete:([a-f0-9]+)$"))
 async def file_delete_confirm(_, cq):
@@ -279,7 +265,6 @@ async def file_delete_cancel(_, cq):
     )
 
 
-# ─── Link ───────────────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^link:([a-f0-9]+)$"))
 async def folder_link(_, cq):
@@ -297,7 +282,6 @@ async def folder_link(_, cq):
     )
 
 
-# ─── Delete folder ──────────────────────────────────────────────────────────────
 
 @Client.on_callback_query(filters.regex(r"^delete_folder:([a-f0-9]+)$"))
 async def delete_folder_confirm(_, cq):
@@ -353,7 +337,6 @@ async def _delete_folder_recursive(folder_id: str):
     )
 
 
-# ─── Set Default Folder (supports "root" as a special value) ───────────────────
 
 @Client.on_callback_query(filters.regex(r"^set_default:(root|[a-f0-9]+)$"))
 async def set_default(_, cq):
@@ -362,7 +345,6 @@ async def set_default(_, cq):
 
     if target == "root":
         await cq.answer("Root set as default!", show_alert=False)
-        # Clear default_folder_id → files will save to root
         await settings.update_one(
             {"user_id": user_id},
             {"$unset": {"default_folder_id": ""}},
